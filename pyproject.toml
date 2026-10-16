@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gmm-embedding-toolkit"
+version = "0.1.0"
+description = "Query/analysis library for Gaussian Mixture Word Embeddings trained by gmm_word_embeddings"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.20.0"]
+
+[project.optional-dependencies]
+# Phase 2 accelerated backend; the base install stays NumPy-only
+torch = ["torch"]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

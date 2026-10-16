@@ -1,0 +1,13 @@
+# Python & Virtual Environments
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# Trained models are produced by the training repo, not stored here
+*.npz
+*.pt
