@@ -1,10 +1,11 @@
 # gmm-embedding-toolkit
 
-A query/analysis library for models trained by [gmm_word_embeddings](https://github.com/Caleb-D-Ace/gmm_word_embeddings) — a PyTorch implementation of Gaussian Mixture Word Embeddings. That repo trains a model and saves it (`sorted_vocab.json` + `gmm_embeddings.npz`/`.pt`); this one reads those files and answers questions about the words in it.
+A query/analysis library for models trained by [gmm-word-embeddings](https://github.com/Caleb-D-Ace/gmm-word-embeddings) — a PyTorch implementation of Gaussian Mixture Word Embeddings. That repo trains a model and saves it (`sorted_vocab.json` + `gmm_embeddings.npz`/`.pt`); this one reads those files and answers questions about the words in it.
 
 **Status: design/planning stage. No code yet.** This README is the working plan, not documentation of something that exists.
 
-Originally motivated by wanting a word embedding model for word-association-game bots (e.g. Codenames), but the library itself is general-purpose — nothing here is specific to that one game.
+This library has been designed to be useful across a large variety of general applications. My initial purpose in creating the gmm-word-embeddings repository (and this one, by extension) was
+to create an alternative word similarity ranking method for word semantic game bots (e.g. Codenames), though it should be useful for many other things.
 
 
 ## Why a separate repo
