@@ -122,46 +122,68 @@ def test_invalid_sense_is_rejected(bad):
         kernels.best_pair(HAND_GRID, True, sense_a=bad)
 
 
-# --- energy ---
+# --- contribution_grid / energy ---
 
-def test_energy_unfixed_matches_direct_formula(params):
+@pytest.fixture
+def contribution(params):
     p = params
     lo = kernels.log_overlap_grid(p["q_mu"], p["q_var"], p["c_mu"], p["c_var"])
+    return lo, kernels.contribution_grid(lo, p["w_q"], p["w_c"])
+
+
+def test_contribution_grid_adds_log_weights(params, contribution):
+    lo, contrib = contribution
+    np.testing.assert_allclose(contrib, np.log(params["w_q"])[None, :, None] + np.log(params["w_c"])[:, None, :] + lo)
+
+
+def test_energy_unfixed_matches_direct_formula(params, contribution):
+    p = params
+    lo, contrib = contribution
     expected = [math.log(sum(p["w_q"][k] * p["w_c"][i, m] * math.exp(lo[i, k, m]) for k in range(K) for m in range(K)))
                 for i in range(M)]
-    for weighted in (False, True):  # The flag makes no difference when nothing is fixed
-        np.testing.assert_allclose(kernels.energy(lo, p["w_q"], p["w_c"], weight_fixed_senses=weighted), expected)
+    np.testing.assert_allclose(kernels.energy(contrib).values, expected)
 
 
-def test_energy_both_fixed(params):
-    p = params
-    lo = kernels.log_overlap_grid(p["q_mu"], p["q_var"], p["c_mu"], p["c_var"])
-    np.testing.assert_allclose(kernels.energy(lo, p["w_q"], p["w_c"], 2, 0), lo[:, 2, 0])
-    np.testing.assert_allclose(kernels.energy(lo, p["w_q"], p["w_c"], 2, 0, weight_fixed_senses=True),
-                               np.log(p["w_q"][2]) + np.log(p["w_c"][:, 0]) + lo[:, 2, 0])
+def test_energy_reports_top_contributing_pair(contribution):
+    _lo, contrib = contribution
+    result = kernels.energy(contrib)
+    top = contrib.reshape(M, K * K).argmax(axis=1)
+    np.testing.assert_array_equal(result.sense_a, top // K)
+    np.testing.assert_array_equal(result.sense_b, top % K)
 
 
-def test_energy_one_fixed(params):
-    p = params
-    lo = kernels.log_overlap_grid(p["q_mu"], p["q_var"], p["c_mu"], p["c_var"])
-    # Flat: query sense 1 as a standalone Gaussian against each candidate's whole mixture
-    flat = [math.log(sum(p["w_c"][i, m] * math.exp(lo[i, 1, m]) for m in range(K))) for i in range(M)]
-    np.testing.assert_allclose(kernels.energy(lo, p["w_q"], p["w_c"], sense_a=1), flat)
-    # Weighted: the same, scaled by query sense 1's weight
-    np.testing.assert_allclose(kernels.energy(lo, p["w_q"], p["w_c"], sense_a=1, weight_fixed_senses=True),
-                               np.log(p["w_q"][1]) + np.array(flat))
+def test_energy_fixed_senses(contribution):
+    _lo, contrib = contribution
+    both = kernels.energy(contrib, sense_a=2, sense_b=0)
+    np.testing.assert_allclose(both.values, contrib[:, 2, 0])
+    assert (both.sense_a == 2).all() and (both.sense_b == 0).all()
+
+    row = kernels.energy(contrib, sense_a=1)
+    np.testing.assert_allclose(row.values, np.log(np.sum(np.exp(contrib[:, 1, :]), axis=1)))
+    assert (row.sense_a == 1).all()
+    np.testing.assert_array_equal(row.sense_b, contrib[:, 1, :].argmax(axis=1))
 
 
-def test_energy_weighted_contributions_add_up_to_full_energy(params):
-    # With weight_fixed_senses=True, every pair's energy is its share of the full energy
-    p = params
-    lo = kernels.log_overlap_grid(p["q_mu"], p["q_var"], p["c_mu"], p["c_var"])
-    pairs = [kernels.energy(lo, p["w_q"], p["w_c"], k, m, weight_fixed_senses=True) for k in range(K) for m in range(K)]
-    np.testing.assert_allclose(np.log(np.sum(np.exp(pairs), axis=0)), kernels.energy(lo, p["w_q"], p["w_c"]))
+def test_per_sense_energies_add_up_to_full_energy(contribution):
+    # Every sense keeps its weight, so fixing a sense gives exactly its share of the full energy
+    _lo, contrib = contribution
+    full = kernels.energy(contrib).values
+    pairs = [kernels.energy(contrib, k, m).values for k in range(K) for m in range(K)]
+    rows = [kernels.energy(contrib, sense_a=k).values for k in range(K)]
+    np.testing.assert_allclose(np.log(np.sum(np.exp(pairs), axis=0)), full)
+    np.testing.assert_allclose(np.log(np.sum(np.exp(rows), axis=0)), full)
 
 
 def test_energy_does_not_underflow():
     # exp(-1000) is 0 in float64, so a naive log(Σ w w exp(lo)) would give -inf here
-    lo = np.full((1, 2, 2), -1000.0)
     w = np.array([0.5, 0.5])
-    assert kernels.energy(lo, w, w[None]) == pytest.approx([-1000.0])
+    contrib = kernels.contribution_grid(np.full((1, 2, 2), -1000.0), w, w[None])
+    assert kernels.energy(contrib).values == pytest.approx([-1000.0])
+
+
+def test_energy_handles_zero_weight():
+    # A mixture weight that underflowed to exactly 0 contributes nothing instead of producing nan
+    contrib = kernels.contribution_grid(np.zeros((1, 2, 2)), np.array([1.0, 0.0]), np.array([[1.0, 0.0]]))
+    result = kernels.energy(contrib)
+    assert result.values == pytest.approx([0.0])
+    assert (result.sense_a[0], result.sense_b[0]) == (0, 0)

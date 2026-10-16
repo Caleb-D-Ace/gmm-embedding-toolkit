@@ -4,7 +4,8 @@ vocab, or sorting involved. A phase 2 torch backend would be a second module wit
 
 Every *_grid function compares ONE query word against M candidate words and returns a grid of shape (M, K, K):
 grid[i, k, m] scores query sense k against candidate i's sense m. Comparing two words is just M = 1.
-best_pair() and energy() then collapse each (K, K) grid into one score per candidate, honoring any fixed senses.
+best_pair() and energy() then collapse each (K, K) grid into one score per candidate, honoring any fixed senses,
+and both report which sense pair the score came from.
 
 Shapes used throughout:
     q_mu, q_var, q_unit:  (K, D)     the query word's components
@@ -22,11 +23,11 @@ import numpy as np
 _MAX_CHUNK_ELEMENTS = 2 ** 22
 
 
-class BestPair(NamedTuple):
-    """Per-candidate result of best_pair(). Each field has shape (M,)."""
-    values: np.ndarray   # The best score for each candidate
-    sense_a: np.ndarray  # Which query sense produced it
-    sense_b: np.ndarray  # Which candidate sense produced it
+class Reduced(NamedTuple):
+    """Per-candidate result of best_pair() or energy(). Each field has shape (M,)."""
+    values: np.ndarray   # One score per candidate
+    sense_a: np.ndarray  # The query sense of the pair the score came from
+    sense_b: np.ndarray  # The candidate sense of that pair
 
 
 def unit_rows(mu: np.ndarray) -> np.ndarray:
@@ -99,8 +100,21 @@ def kl_grid(q_mu: np.ndarray, q_var: np.ndarray, c_mu: np.ndarray, c_var: np.nda
     return _chunked(block, c_mu, c_var)
 
 
+def contribution_grid(log_overlap: np.ndarray, w_q: np.ndarray, w_c: np.ndarray) -> np.ndarray:
+    """
+    Turn a log_overlap_grid() into each component pair's contribution to the energy: the overlap weighted by how
+    much mixture weight both senses carry. Higher is more similar. A rare sense's pairs score lower in proportion
+    to its rarity (by log w, e.g. about -1.6 for a weight of 0.2), even if its overlap is high.
+
+    Math:
+        contribution[k, m] = log w_q[k] + log w_c[m] + log_Δ(k, m)
+    """
+    with np.errstate(divide="ignore"):  # A weight that underflowed to exactly 0 gives log 0 = -inf, which logsumexp handles
+        return np.log(w_q)[None, :, None] + np.log(w_c)[:, None, :] + log_overlap
+
+
 def best_pair(grid: np.ndarray, higher_is_better: bool,
-              sense_a: Optional[int] = None, sense_b: Optional[int] = None) -> BestPair:
+              sense_a: Optional[int] = None, sense_b: Optional[int] = None) -> Reduced:
     """
     Collapse a (M, K, K) grid to the best component pair per candidate: max for similarities, min for distances.
 
@@ -116,48 +130,30 @@ def best_pair(grid: np.ndarray, higher_is_better: bool,
 
     flat = masked.argmax(axis=1) if higher_is_better else masked.argmin(axis=1)
     values = np.take_along_axis(masked, flat[:, None], axis=1)[:, 0]
-    return BestPair(values=values, sense_a=flat // K, sense_b=flat % K)
+    return Reduced(values=values, sense_a=flat // K, sense_b=flat % K)
 
 
-def energy(log_overlap: np.ndarray, w_q: np.ndarray, w_c: np.ndarray,
-           sense_a: Optional[int] = None, sense_b: Optional[int] = None,
-           weight_fixed_senses: bool = False) -> np.ndarray:
+def energy(contribution: np.ndarray, sense_a: Optional[int] = None, sense_b: Optional[int] = None) -> Reduced:
     """
-    Collapse a (M, K, K) log_overlap_grid() to one expected likelihood energy per candidate. Higher is more similar.
+    Collapse a (M, K, K) contribution_grid() to one expected likelihood energy per candidate. Higher is more similar.
     A direct NumPy port of GMMWordEmbedding.gmm_energy in the training repo, extended to support fixed senses.
 
     Math:
-        E = logsumexp over the allowed pairs (k, m) of [ log w_q[k] + log w_c[m] + log_Δ(k, m) ]
+        E = logsumexp over the allowed pairs (k, m) of contribution[k, m]
 
-    With no senses fixed every pair is allowed and this is exactly the energy training optimized; the
-    weight_fixed_senses flag makes no difference. Fixing a sense restricts the sum to that sense, and
-    weight_fixed_senses decides what happens to its mixture weight:
-        False (flat):      the fixed sense is treated as a standalone Gaussian with weight 1, so its log-weight
-                           is dropped. Measures that sense's overlap regardless of how common the sense is.
-                           Both fixed -> exactly log_Δ(k, m).
-        True (weighted):   the fixed sense keeps its mixture weight, so a rare sense scores lower in proportion
-                           to its rarity (by log w, e.g. about -1.6 for a weight of 0.2). Equivalent to "that
-                           sense's contribution to the full energy". Both fixed -> log w_q[k] + log w_c[m] + log_Δ(k, m).
-    An unfixed side always keeps its weights, since it's still a whole mixture.
+    Unlike best_pair(), no single pair produces the energy: it's a soft sum over all of them. The reported senses
+    are the pair contributing the most, i.e. the one the energy is mostly "about".
 
-    Energies computed with different senses fixed (or a different weight_fixed_senses) aren't on the same scale,
-    so only compare scores computed the same way.
+    With no senses fixed, every pair is allowed and this is exactly the energy training optimized. Fixing a sense
+    restricts the sum to that sense's row and/or column, giving that sense's share of the full energy: because
+    every sense keeps its mixture weight, the per-sense energies logsumexp back together into the full energy.
     """
-    K = log_overlap.shape[1]
+    M, K, _ = contribution.shape
     mask = _sense_mask(sense_a, sense_b, K)
+    masked = np.where(mask, contribution, -np.inf).reshape(M, K * K)
 
-    with np.errstate(divide="ignore"):  # A weight that underflowed to exactly 0 gives log 0 = -inf, which logsumexp handles
-        log_w_q = np.log(w_q)
-        log_w_c = np.log(w_c)
-    if not weight_fixed_senses:
-        if sense_a is not None:
-            log_w_q = np.zeros_like(log_w_q)
-        if sense_b is not None:
-            log_w_c = np.zeros_like(log_w_c)
-
-    terms = log_w_q[None, :, None] + log_w_c[:, None, :] + log_overlap  # (M, K, K)
-    terms = np.where(mask, terms, -np.inf)
-    return _logsumexp(terms.reshape(terms.shape[0], K * K))
+    flat = masked.argmax(axis=1)
+    return Reduced(values=_logsumexp(masked), sense_a=flat // K, sense_b=flat % K)
 
 
 def _sense_mask(sense_a: Optional[int], sense_b: Optional[int], K: int) -> np.ndarray:
