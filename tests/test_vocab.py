@@ -17,7 +17,7 @@ def test_load_round_trips_ids(vocab):
 
 
 def test_iterates_in_id_order(vocab):
-    assert list(vocab) == ["bank", "river", "money", "water"]
+    assert list(vocab) == list(TOY_VOCAB)
 
 
 def test_lookup_is_case_and_whitespace_insensitive(vocab):
@@ -27,28 +27,28 @@ def test_lookup_is_case_and_whitespace_insensitive(vocab):
 
 
 def test_contains_rejects_missing_and_non_strings(vocab):
-    assert "tree" not in vocab
+    assert "oak" not in vocab
     assert 0 not in vocab
 
 
 def test_frequency(vocab):
-    total = 50 + 30 + 15 + 5
+    total = sum(count for _id, count in TOY_VOCAB.values())
     assert vocab.frequency("river") == WordFrequency(rank=1, count=30, share=30 / total)
 
 
 def test_counts_is_read_only(vocab):
-    assert list(vocab.counts) == [50, 30, 15, 5]
+    assert list(vocab.counts) == [count for _id, count in TOY_VOCAB.values()]
     with pytest.raises(ValueError):
         vocab.counts[0] = 1
 
 
 def test_oov_is_a_key_error_with_details(vocab):
     with pytest.raises(KeyError) as exc_info:
-        vocab.id("Tree")
+        vocab.id("Oak")
     err = exc_info.value
     assert isinstance(err, OutOfVocabularyError)
-    assert err.word == "Tree"
-    assert err.normalized == "tree"
+    assert err.word == "Oak"
+    assert err.normalized == "oak"
     assert "stopword" in str(err)
 
 
