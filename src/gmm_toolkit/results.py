@@ -1,8 +1,28 @@
 """
 Small result types returned by the public API. NamedTuples so they unpack like plain tuples
-(`rank, count, share = vocab.frequency("bank")`) but still print with field names.
+(`value, (sense_a, sense_b) = model.similarity("bank", "river")`) but still print with field names.
 """
 from typing import NamedTuple
+
+
+class Score(NamedTuple):
+    """
+    A score between two words, and which sense pair it came from.
+
+    Attributes:
+        value: The score. Whether higher or lower is better depends on the metric (see gmm_toolkit.METRICS).
+        senses: (sense of the first word, sense of the second word), 0-indexed. For best-pair metrics this is the
+                pair that produced the value; for energy it's the pair contributing the most to it.
+    """
+    value: float
+    senses: tuple[int, int]
+
+
+class Match(NamedTuple):
+    """One entry of a ranked list: a candidate word, its score against the query, and the sense pair (query, candidate)."""
+    word: str
+    value: float
+    senses: tuple[int, int]
 
 
 class WordFrequency(NamedTuple):
